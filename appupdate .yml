@@ -1,0 +1,138 @@
+---
+- hosts: host1 host2
+  gather_facts: no
+  remote_user: user
+  vars:
+#上传到远程主机的路径
+    Version_path: ${HOME}/upgrade/{{ Version }}
+#部署到远程主机的路径    
+    app_path: ${HOME}/app
+#ansible主机上的文件，要把此文件上传到远程主机
+    ansible_app_path: /home/ansible/{{ Version}}.zip 
+  tasks:
+#检查远程主机的java_home，如果不存在则退出ansible剧本
+    - name: check_JAVA_HOME      
+      block:
+        - shell: source ${HOME}/.bashrc; [ -n "$JAVA_HOME" ] && echo Using java at $JAVA_HOME || echo JAVA_HOME not find 
+          register: java_result
+        - fail:
+                msg: "{{ java_result.stdout }}"
+          when: java_result.stdout == "JAVA_HOME not find"
+        - debug:
+                var: java_result.stdout_lines
+#每个任务都用block分开若只想在某个主机上执行则打开下面一行注释，如下面检查java_home只在host1上执行
+#      when: ansible_ssh_host == "host1"
+
+
+#检查远程主机的用户名，这一步可以省略
+#    - name: check_USER           
+#      block:
+#        - shell: echo $USER
+#          register: USER
+#        - fail:
+#                msg: "The user name is {{ USER.stdout}} , please change to user"
+#          when: USER.stdout != "user"
+#        - debug: 
+#                msg: "The user name is {{ USER.stdout }}"
+#          when: USER.stdout == "user" 
+
+#检查远程主机的上传文件路径是否有同名文件，如果有则重命名   
+    - name: check_Version_path
+      block:
+        - shell: ls "{{ Version_path }}"
+          ignore_errors: True
+          register: Version_path_result
+        - shell: mv "{{ Version_path }}" "{{ Version_path }}".$(date +"%Y%m%d_%H%M%S") 
+          when: Version_path_result|succeeded
+        - file:
+                path: "{{  Version_path }}/backup"
+                state: directory
+                mode: 0755
+                owner: user
+                group: user
+
+#把要上传的文件从ansible主机上传至远程主机
+    - name: upload_App
+      block:
+        - copy:
+                src: "{{ ansible_app_path }}"
+                dest: "{{ Version_path }}"
+                owner: user
+                group: user
+                mode: 0644
+
+#解压上传的文件
+    - name: Unzip_App
+      block:
+        - unarchive:
+                src: "{{ Version_path }}/{{ Version}}.zip"
+                dest: "{{ Version_path }}"
+                remote_src: yes
+          ignore_errors: True
+          register: Unzip_App_result
+        - fail:
+                msg: "Unzip is failed"
+          when: Unzip_App_result|failed
+        - debug:
+                msg: "Unzip is successfully"
+          when: Unzip_App_result|succeeded
+
+#停止服务
+    - name: stopt app
+      block:
+#app.sh是停止和启动服务的脚本文件，以下以升级app服务和tomcat服务为例
+        - shell: cd "{{ app_path }}" ; chmod +x *.sh ; ./app.sh stop
+        - shell: cd /home/user/tomcat/apache-tomcat-9.0.22/bin ; ./shutdown.sh
+        - wait_for:
+#app.pid是app服务的pid文件，当pid文件不存在，则证明app服务停止了
+                path: "{{ app_path }}/app.pid"
+                state: absent
+          register: stop_app_result
+        - debug:
+                msg: "app is stop"
+          when: stop_app_result.state == "absent"
+#tomcat服务是以查看8080端口是否存在来确定tomcat服务是否启动
+          - wait_for:
+                port: 8080
+                state: stopped
+          register: stop_tomcat_result
+        - debug:
+                var: stop_tomcat_result.state 
+
+#备份文件，之所以用shell命令备份文件是因为ansible的archive模块不能备份完整的目录路径
+#这里备份的是: ~/app/test/test.txt文件               
+    - name: backup
+      block:
+        - shell: cd ${HOME} ;tar -zcvf  "upgrade/{{ Version }}/backup/{{ Version }}_before.tar.gz"  app/test/test.txt
+        - wait_for:
+                path: "{{ Version_path}}/backup/{{ Version }}_before.tar.gz"
+                state: present
+          register: backup_result
+        - debug:
+                msg: "backup successfully"
+          when: backup_result|succeeded
+
+#中间这一部分是要进行修改的部分，此部分进行省略，可以用shell模块的sed命令，也可以用lineinfile模块          
+          
+#启动服务，app.sh是停止和启动服务的脚本文件，和上面停止服务对应
+#启动服务的顺序应该遵从先停后启的原则，本文件是示例，所以顺序不影响，实际操作请注意          
+    - name: start app
+      block:
+        - shell: cd "{{ app_path }}" ; chmod +x *.sh ; ./app.sh start
+        - wait_for:
+                path: "{{ app_path }}/app.pid"
+                state: present
+          register: start_app_result
+        - debug:
+                msg: "app is start"
+          when: start_app_result.state == "file"
+        - shell: nohup /home/user/tomcat/apache-tomcat-9.0.22/bin/startup.sh
+        - wait_for:
+                port: 8080
+                state: started
+          register: start_tomcat_result
+        - debug:
+                var: start_tomcat_result.state
+# 运行ansible的命令：ansible-playbook appupdate.yml --extra-vars "Version=V1.15.1"
+#其中Version变量的升级的版本号
+#此ansible文件仅供参考

@@ -1,0 +1,59 @@
+#这个yml文件是变更回退步骤
+---
+- hosts: redis6 mysql2 
+  gather_facts: no
+  remote_user: smrs
+  vars:
+    Version_path: ${HOME}/upgrade/{{ Version }}
+    app_path: ${HOME}/app
+  tasks:
+#停止服务，此步骤注释参考appupdate.yml文件
+    - name: stop app
+      block:
+        - shell: cd "{{ app_path }}" ; chmod +x *.sh ; ./app.sh stop
+        - shell: cd /home/smrs/tomcat/apache-tomcat-9.0.22/bin ; ./shutdown.sh
+        - wait_for:
+                path: "{{ app_path }}/app_rmb.pid"
+                state: absent
+          register: stop_app_result
+        - debug:
+                msg: "app is stop"
+          when: stop_app_result.state == "absent"
+        - wait_for:
+                port: 8080
+                state: stopped
+          register: stop_tomcat_result
+        - debug:
+                var: stop_tomcat_result.state 
+
+#回退步骤，把appupdate.yml压缩的文件解压
+    - name: roollback
+      block:
+        - shell: cd ${HOME}; tar -xvf "{{ Version_path }}/backup/{{ Version }}_before.tar.gz"
+          register: roollback_result
+        - debug:
+                msg: "roollback is ok"
+          when: roollback_result|succeeded
+
+#启动服务的顺序应该遵从先停后启的原则，本文件是示例，所以顺序不影响，实际操作请注意
+    - name: start app
+      block:
+        - shell: cd "{{ app_path }}" ; chmod +x *.sh ; ./app.sh start
+        - wait_for:
+                path: "{{ app_path }}/app_rmb.pid"
+                state: present
+          register: start_app_result
+        - debug:
+                msg: "app is start" 
+          when: start_app_result.state == "file"
+        - shell: nohup /home/smrs/tomcat/apache-tomcat-9.0.22/bin/startup.sh
+        - wait_for:
+                port: 8080
+                state: started
+          register: start_tomcat_result
+        - debug:
+                var: start_tomcat_result.state
+
+# 运行ansible的命令：ansible-playbook approllback.yml --extra-vars "Version=V1.15.1"
+#其中Version变量的升级的版本号
+#此ansible文件仅供参考
