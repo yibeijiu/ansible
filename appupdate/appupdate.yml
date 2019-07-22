@@ -60,6 +60,18 @@
                 owner: user
                 group: user
                 mode: 0644
+          register: upload_result
+        - debug:
+                msg: "upload finished"
+          when: upload_result | succeeded
+        - shell: md5sum "{{ Version_path }}/{{ Version}}.zip" | awk 'NR == 1 { print $1}'
+          register: md5_result
+        - fail:
+                msg: "upload_App is error"
+#双引号里面的MD5值是要上传文件的MD5值
+          when: md5_result.stdout != "0e1f648bd084f219767739329f41fef2"
+        - debug:
+                msg: "upload_APP is True"
 
 #解压上传的文件
     - name: Unzip_App
